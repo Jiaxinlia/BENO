@@ -1,6 +1,9 @@
 from __future__ import print_function
 import argparse
-from collections import Counter, OrderedDict, Iterable
+# from collections import Counter, OrderedDict, Iterable
+from collections import Counter, OrderedDict
+from collections.abc import Iterable
+
 import contextlib
 from datetime import datetime
 import os
