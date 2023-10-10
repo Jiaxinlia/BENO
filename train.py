@@ -12,7 +12,8 @@ from torch_geometric.data import Data, DataLoader
 from torch_geometric.utils import scatter
 from torchvision.transforms import GaussianBlur
 import sys, os
-from utilities import *
+# from utilities import *
+from utilities import MeshGenerator,GaussianNormalizer,LpLoss
 from util import record_data, to_cpu, to_np_array, make_dir
 from BE_MPNN import HeteroGNS
 import random
@@ -21,7 +22,7 @@ import matplotlib.tri as tri
 from torch_geometric.data import HeteroData
 import warnings
 warnings.filterwarnings('ignore')
-
+import pdb
 fix_seed = 2023
 random.seed(fix_seed)
 torch.manual_seed(fix_seed)
@@ -34,8 +35,8 @@ torch.backends.cudnn.benchmark = False
 
 parser = argparse.ArgumentParser(description='Training')
 
-parser.add_argument('--dataset_type', default="32x32", type=str,
-                    help='dataset type')
+# parser.add_argument('--dataset_type', default="32x32", type=str,
+#                     help='dataset type')
 parser.add_argument('--epochs', default=1000, type=int,
                     help='Epochs')
 parser.add_argument('--lr', default=0.00001, type=float,
@@ -46,7 +47,7 @@ parser.add_argument('--id', default="0", type=str,
                     help='ID')
 parser.add_argument('--init_boudary_loc', default="regular", type=str,
                     help='choose from "random" or "regular" ')
-parser.add_argument('--trans_layer', default=4, type=int,
+parser.add_argument('--trans_layer', default=3, type=int,
                     help='Layer of Transformer')
 parser.add_argument('--boundary_dim', default=128, type=int,
                     help='Layer of Transformer')
@@ -56,38 +57,44 @@ parser.add_argument('--act', default="relu", type=str,
                     help='activation choose from "relu","elu","leakyrelu","silu')
 parser.add_argument('--nmlp_layers',default=2,type=int,
                     help='number of layers of GNS')
+parser.add_argument('--ns',default=10,type=int,
+                    help='number of the number of neighbor nodes')
 try:
     is_jupyter = True
     args = parser.parse_args([])
-    args.dataset_type = "4corners"
     args.boundary_dim = 128
     args.act = 'silu'
     args.nmlp_layers = 3
     args.lr=0.00005
     args.trans_layer = 3
-  
+    args.ns=10
 except:
     args = parser.parse_args()
 pp.pprint(args.__dict__)
 
 
-dataset_type = args.dataset_type
+# dataset_type = args.dataset_type
 # ## ===============================================================
-dataset_type = args.dataset_type
-DATA_PATH = f"./data/"
+
+# DATA_PATH = f"/lijiaxin/0818/data/0925data/"
+# f_all = np.load(DATA_PATH + "RHS_N32_all.npy")
+# sol_all = np.load(DATA_PATH + "SOL_N32_all.npy")
+# bc_all=np.load(DATA_PATH + "BC_N32_all.npy")
+# ntrain = 900
+# ntest =100
+## ===============================================================
+
+
+DATA_PATH = f"/lijiaxin/0818/data/neo/4corner/"
 f_all = np.load(DATA_PATH + "RHS_N32_10.npy")
 sol_all = np.load(DATA_PATH + "SOL_N32_10.npy")
 bc_all=np.load(DATA_PATH + "BC_N32_10.npy")
-ntrain = 9
-ntest =1
-## ===============================================================
+ntrain = 7
+ntest =3
+# ===============================================================
 
 gblur = GaussianBlur(kernel_size=5, sigma=5)
-ms = [80,350,1000]
-case = 2
-m = ms[case]
-r = 1
-k = 1
+
 
 batch_size = args.batch_size
 batch_size2 = args.batch_size
@@ -96,11 +103,9 @@ ker_width = 256
 depth = 4
 edge_features = 7
 node_features = 10
-
+ns=args.ns
 epochs = args.epochs
 learning_rate = args.lr
-scheduler_step = epochs
-scheduler_gamma = 0.5
 inspect_interval = args.inspect_interval
 
 runtime = np.zeros(2, )
@@ -108,18 +113,16 @@ t1 = default_timer()
 
 resolution = 32
 s = resolution
-n = s**2
-delta=1/s
-min_r=10*delta
-radius_train = 10*delta
-radius_test = 10*delta
+n=s**2
+
+
 trans_layer = args.trans_layer
 
-path = 'Resolution_' + str(s) + '_poisson'+'_dataset_' + dataset_type + \
-    '_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_m0' + str(m) + '_radius' + str(radius_train) +\
-    '_Transformer_layer' + str(args.trans_layer) + '_Rolling' + args.init_boudary_loc+\
-    '_nheads2'+'_bddim'+str(args.boundary_dim)+"_act"+args.act+'lr'+str(args.lr)+'new'+'_nmlp_layers'+str(args.nmlp_layers)
-path_model = './' + path
+path = 'Resolution_' + str(s) + '_poisson' + \
+    '_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_Transformer_layer' + str(args.trans_layer) +\
+    '_Rolling' + args.init_boudary_loc+'_ns'+str(args.ns)+\
+    '_nheads2'+'_bddim'+str(args.boundary_dim)+"_act"+args.act+'lr'+str(args.lr)+'_nmlp_layers'+str(args.nmlp_layers)
+path_model = '/lijiaxin/0818/neo_results/1010/' + path
 make_dir(path_model)
 
 logger.add(os.path.join('log', '{}.log'.format(
@@ -129,9 +132,7 @@ logger.info(path)
 cells_state=f_all[:,:,3] # node type \in {0,1,2,3}
 coord_all=f_all[:,:,0:2] # all node corrdinate
 bc_euco=bc_all[:,:,0:2]  # boundary corrdinate
-
 bc_value=bc_all[:,:,2].reshape(-1,128,1)   # boundary value
- 
 bc_value=torch.tensor(bc_value)  
 bc_value_1=bc_value[0:900,:,:] 
 bc_euco=torch.tensor(bc_euco)
@@ -203,8 +204,8 @@ test_a_grady = agy_normalizer.encode(test_a_grady)
 u_normalizer = GaussianNormalizer(x=indomain_u)  
 train_u = u_normalizer.encode(train_u)
 
-grid_input=f_all[0,:,0:2]
-meshgenerator = RandomMeshGenerator([[0,1],[0,1]],[s,s], sample_size=m, grid_input = grid_input)
+grid_input=f_all[-1,:,0:2]  
+meshgenerator = MeshGenerator([[0,1],[0,1]],[s,s], grid_input = grid_input)
 data_train = []
 for j in range(ntrain):
     mesh_idx_temp=[p for p in range(resolution**2)]
@@ -212,13 +213,9 @@ for j in range(ntrain):
     for p in range(f_all.shape[1]): 
         if (cells_state[j][p]!=0):  
             outdomain_idx=np.append(outdomain_idx,p)
-        
-    del_idx=[]  
-    for p in range(len(mesh_idx_temp)):
-        if mesh_idx_temp[p] in outdomain_idx:
-            del_idx.append(mesh_idx_temp[p])
-    for p in range(len(del_idx)):
-        mesh_idx_temp.remove(del_idx[p])
+    for p in range(len(outdomain_idx)):
+            mesh_idx_temp.remove(outdomain_idx[p])
+
     
     dist2bd_x=np.array([0,0])[np.newaxis,:]
     dist2bd_y=np.array([0,0])[np.newaxis,:]
@@ -244,7 +241,7 @@ for j in range(ntrain):
     dist2bd_x = torch.tensor(dist2bd_x[1:]).float() # [num, 2]
 
     
-    idx = meshgenerator.poisson_disk_sample(mesh_idx_temp)
+    idx = meshgenerator.sample(mesh_idx_temp)  #这一步只是将indomain的idx输入，并赋给get_grid
     grid = meshgenerator.get_grid()
     
     xx=to_np_array(grid[:,0])
@@ -252,8 +249,8 @@ for j in range(ntrain):
     triang = tri.Triangulation(xx, yy)
     tri_edge = triang.edges    
 
-    edge_index = meshgenerator.ball_connectivity_dist_0(radius_train,ns=10,tri_edge=tri_edge)
-    edge_attr = meshgenerator.attributes_dist_neo7(theta=train_a[j,:])
+    edge_index = meshgenerator.ball_connectivity(ns=10,tri_edge=tri_edge)
+    edge_attr = meshgenerator.attributes(theta=train_a[j,:])
     train_x = torch.cat([grid, train_a[j, idx].reshape(-1, 1),
                              train_a_smooth[j, idx].reshape(-1, 1), train_a_gradx[j, idx].reshape(-1, 1),
                              train_a_grady[j, idx].reshape(-1, 1), dist2bd_x,dist2bd_y
@@ -287,16 +284,12 @@ data_test = []
 for j in range(ntest):
     mesh_idx_temp=[p for p in range(resolution**2)]
     outdomain_idx=np.array([])
-    for p in range(f_all.shape[1]):
-        if (cells_state[j+ntrain][p]!=0):
-            outdomain_idx=np.append(outdomain_idx,p) 
-    
-    del_idx=[]  
-    for p in range(len(mesh_idx_temp)):
-        if mesh_idx_temp[p] in outdomain_idx:
-            del_idx.append(mesh_idx_temp[p])
-    for p in range(len(del_idx)):
-        mesh_idx_temp.remove(del_idx[p])     
+    for p in range(f_all.shape[1]): 
+        if (cells_state[j+ntrain][p]!=0):  
+            outdomain_idx=np.append(outdomain_idx,p)
+        
+    for p in range(len(outdomain_idx)):
+            mesh_idx_temp.remove(outdomain_idx[p])     
     
     dist2bd_x=np.array([0,0])[np.newaxis,:]
     dist2bd_y=np.array([0,0])[np.newaxis,:]
@@ -324,7 +317,7 @@ for j in range(ntest):
     dist2bd_x = torch.tensor(dist2bd_x[1:]).float() # [num, 2]
     
     
-    idx = meshgenerator.poisson_disk_sample(mesh_idx_temp)
+    idx = meshgenerator.sample(mesh_idx_temp)
     grid = meshgenerator.get_grid()
     
     xx=to_np_array(grid[:,0])   
@@ -332,8 +325,8 @@ for j in range(ntest):
     triang = tri.Triangulation(xx, yy)
     tri_edge = triang.edges    
 
-    edge_index = meshgenerator.ball_connectivity_dist_0(radius_train,ns=10,tri_edge=tri_edge)
-    edge_attr = meshgenerator.attributes_dist_neo7(theta=test_a[j,:])
+    edge_index = meshgenerator.ball_connectivity(ns=10,tri_edge=tri_edge)
+    edge_attr = meshgenerator.attributes(theta=test_a[j,:])
     
     test_x = torch.cat([grid, test_a[j, idx].reshape(-1, 1),
                         test_a_smooth[j, idx].reshape(-1, 1), test_a_gradx[j, idx].reshape(-1, 1),
@@ -403,7 +396,7 @@ for ep in range(epochs):
     train_l2 = 0.0
     for batch in train_loader:
 
-        n = np.random.randint(2)
+        # n = np.random.randint(2)
         batch = batch.to(device)
         optimizer.zero_grad()
         out = model(batch)
@@ -413,6 +406,8 @@ for ep in range(epochs):
         l2 = myloss(
             u_normalizer.decode(out.view(batch_size, -1), sample_idx=batch['G1'].sample_idx.view(batch_size, -1)),
             u_normalizer.decode(batch['G1+2'].y.view(batch_size, -1), sample_idx=batch['G1'].sample_idx.view(batch_size, -1))) #G1和G2的sanmple_idx是一样的
+        
+        # pdb.set_trace()
         optimizer.step()
         train_mse += loss.item()
         train_l2 += l2.item()
@@ -430,10 +425,10 @@ for ep in range(epochs):
             test_l2 += myloss(out, batch['G1+2'].y.view(batch_size2, -1)).item()
 
     t3 = default_timer()
-    ttrain[ep] = train_l2/(ntrain * k)
+    ttrain[ep] = train_l2/(ntrain)
     ttest[ep] = test_l2/ntest
-    logger.info(f"Epoch {ep:03d}     train_Loss: {train_mse/len(train_loader):.6f}  \t train_L2: {train_l2/(ntrain * k):.6f}\t test_L2: {test_l2/ntest:.6f}")
-    record_data(data_record, [ep, train_mse/len(train_loader), train_l2/(ntrain * k), test_l2/ntest], ["epoch", "train_MSE", "train_L2", "test_L2"])
+    logger.info(f"Epoch {ep:03d}     train_Loss: {train_mse/len(train_loader):.6f}  \t train_L2: {train_l2/(ntrain):.6f}\t test_L2: {test_l2/ntest:.6f}")
+    record_data(data_record, [ep, train_mse/len(train_loader), train_l2/(ntrain), test_l2/ntest], ["epoch", "train_MSE", "train_L2", "test_L2"])
     if ep % inspect_interval == 0 or ep == epochs - 1:
         record_data(data_record, [ep, to_cpu(model.state_dict())], ["save_epoch", "state_dict"])
         pickle.dump(data_record, open(path_model, "wb"))
